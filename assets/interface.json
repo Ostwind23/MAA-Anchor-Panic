@@ -1,0 +1,53 @@
+{
+    // 本文件主要定义了通用 UI 的行为和显示内容
+    // 可参考文档和示例添加更多您需要的功能
+    // 文档：https://github.com/MaaXYZ/MaaFramework/blob/main/docs/zh_cn/3.3-ProjectInterfaceV2%E5%8D%8F%E8%AE%AE.md
+    // 示例：https://github.com/MaaXYZ/MaaFramework/blob/main/sample/interface.json
+    "interface_version": 2,
+    "name": "MAA-Anchor-Panic",
+    "description": "MAA-Anchor-Panic",
+    "contact": "",
+    "license": "MIT",
+    "welcome": "欢迎使用 MAA-Anchor-Panic！\n基于 MaaFramework 开发。",
+    "version": "0.1.0",
+    "controller": [
+        {
+            "name": "模拟器",
+            "label": "模拟器",
+            "type": "Adb",
+            "description": "V2 协议支持分辨率缩放：MaaFramework 会将截图缩放到短边 720 进行识别与点击坐标换算，因此不强制 1280x720；但建议保持比例为 16:9 以获得更稳定的识别效果。",
+            "display_short_side": 720
+        }
+    ],
+    "resource": [
+        {
+            "name": "官服",
+            "label": "官服",
+            "path": [
+                "resource"
+            ]
+        }
+    ],
+    "agent": {
+        "child_exec": "conda",
+        "child_args": [
+            "run",
+            "-n",
+            "MAA",
+            "--no-capture-output",
+            "python",
+            "../agent/main.py"
+        ]
+    },
+    "task": [
+        // 在此处添加任务
+        // 示例:
+        // {
+        //     "name": "启动游戏",
+        //     "entry": "Startup"
+        // }
+    ],
+    "option": {
+        // 在此处添加选项
+    }
+}

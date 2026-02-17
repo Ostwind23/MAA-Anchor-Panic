@@ -1,0 +1,345 @@
+name: install
+
+env:
+  MFAA_VERSION: "v2.6.2"
+  MAA_FRAMEWORK_VERSION: "v5.5.0"
+  PYTHON_EMBED_VERSION: "3.12.4"
+  PYTHON_BUILD_STANDALONE_RELEASE_TAG: "20240507"
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "**"
+    paths:
+      - ".github/workflows/install.yml"
+      - "assets/**"
+      - "**.py"
+  pull_request:
+    branches:
+      - "**"
+    paths:
+      - ".github/workflows/install.yml"
+      - "assets/**"
+      - "**.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: set_tag
+        run: |
+          is_release=${{ startsWith(github.ref, 'refs/tags/v') }}
+          tag=$(git describe --tags --match "v*" ${{ github.ref }} || true)
+          if [[ $tag != v* ]]; then
+            tag=$(curl -sX GET "https://api.github.com/repos/${{ github.repository }}/releases/latest" --header 'authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' | awk '/tag_name/{print $4}' FS='["]')
+            if [[ $tag != v* ]]; then
+              tag="v0.0.0"
+            fi
+            tag=$(date "+$tag-%y%m%d-$(git rev-parse --short HEAD)")
+          fi
+
+          if ! $($is_release) ; then
+            prefix=${tag%-*-*}
+            suffix=${tag#$prefix-}
+            tag="$prefix-ci.$suffix"
+          fi
+
+          is_prerelease=false
+          if [[ $tag =~ .*alpha.* || $tag =~ .*beta.* || $tag =~ .*rc.* || $tag =~ .*dev.* || $tag =~ .*-ci.* ]]; then
+            is_prerelease=true
+            echo "This is a pre-release version"
+          fi
+
+          echo tag=$tag | tee -a $GITHUB_OUTPUT
+          echo is_release=$is_release | tee -a $GITHUB_OUTPUT
+          echo is_prerelease=$is_prerelease | tee -a $GITHUB_OUTPUT
+    outputs:
+      tag: ${{ steps.set_tag.outputs.tag }}
+      is_release: ${{ steps.set_tag.outputs.is_release }}
+      is_prerelease: ${{ steps.set_tag.outputs.is_prerelease }}
+
+  install:
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os: win
+            arch: x86_64
+            runner: windows-latest
+            python_version: "3.12.4"
+            python_arch: x64
+          - os: macos
+            arch: x86_64
+            runner: ubuntu-latest
+            python_version: "3.12.4"
+            python_arch: x64
+          - os: macos
+            arch: aarch64
+            runner: ubuntu-latest
+            python_version: "3.12.4"
+            python_arch: x64
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+            python_version: "3.12.4"
+            python_arch: x64
+          - os: linux
+            arch: aarch64
+            runner: ubuntu-latest
+            python_version: "3.11.9"
+            python_arch: x64
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python_version }}
+          architecture: ${{ matrix.python_arch }}
+
+      - name: Download MFAAvalonia
+        if: matrix.os != 'android'
+        id: download_mfa
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: SweetSmellFox/MFAAvalonia
+          fileName: "MFAAvalonia-*-${{ (matrix.os == 'win' && 'win') || (matrix.os == 'macos' && 'osx') || (matrix.os == 'linux' && 'linux') }}-${{ (matrix.arch == 'x86_64' && 'x64') || (matrix.arch == 'aarch64' && 'arm64') }}*"
+          tag: ${{ env.MFAA_VERSION }}
+          out-file-path: "MFA"
+          extract: true
+
+      - name: Download MaaFramework
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: MaaXYZ/MaaFramework
+          fileName: "MAA-${{ matrix.os }}-${{ matrix.arch }}*"
+          tag: ${{ env.MAA_FRAMEWORK_VERSION }}
+          out-file-path: "deps"
+          extract: true
+
+      - name: Clean up MFAAvalonia archive
+        if: matrix.os != 'android'
+        shell: bash
+        run: |
+          ARCHIVE_FILE_PATH="${{ fromJson(steps.download_mfa.outputs.downloaded_files)[0] }}"
+          rm -f "${ARCHIVE_FILE_PATH}"
+          echo "Archive cleanup command executed for MFAAvalonia."
+
+      - name: Setup Embed Python
+        if: matrix.os != 'linux'
+        shell: bash
+        run: |
+          python tools/ci/setup_embed_python.py ${{ matrix.os }} ${{ matrix.arch }} \
+            --version ${{ env.PYTHON_EMBED_VERSION }} \
+            --output-dir install/python
+
+      - name: Fix permissions on unix
+        if: matrix.os != 'win'
+        shell: bash
+        run: |
+          if [ -d "./install/python/bin" ]; then
+            chmod +x ./install/python/bin/* 2>/dev/null || true
+          fi
+          if [ -d "./install" ]; then
+            find ./install -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+          fi
+
+      - name: Install on unix
+        if: matrix.os != 'win'
+        shell: bash
+        run: |
+          if [ -d "MFA" ]; then
+            echo "Copying MFA files to install directory..."
+            mkdir -p install
+            rsync -av --ignore-existing MFA/ install/
+          else
+            echo "MFA directory not found, skipping copy."
+          fi
+
+          python3 -m pip install -r tools/requirements.txt
+          python3 tools/ci/install.py ${{ needs.meta.outputs.tag }} ${{ matrix.os }} ${{ matrix.arch }}
+
+      - name: Install on windows
+        if: matrix.os == 'win'
+        shell: bash
+        run: |
+          if [ -d "MFA" ]; then
+            echo "Copying MFA files to install directory..."
+            mkdir -p install
+            cp -r MFA/* install/
+          else
+            echo "MFA directory not found, skipping copy."
+          fi
+
+          python -m pip install -r tools/requirements.txt
+          python tools/ci/install.py ${{ needs.meta.outputs.tag }} ${{ matrix.os }} ${{ matrix.arch }}
+
+      - name: Setup custom Assets
+        shell: bash
+        run: |
+          if [ -d "install/Assets" ]; then
+            rm -rf install/Assets
+          fi
+          mkdir -p install/assets
+          if [ -d "assets/Assets" ]; then
+            cp -rv assets/Assets/* install/assets/
+          fi
+
+
+      - name: Replace MFAAvalonia.exe icon
+        if: matrix.os == 'win' && matrix.arch == 'x86_64'
+        shell: pwsh
+        run: |
+          $rceditUrl = "https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe"
+          $rceditPath = "rcedit-x64.exe"
+          Invoke-WebRequest -Uri $rceditUrl -OutFile $rceditPath
+          $exePath = "install/MFAAvalonia.exe"
+          $icoPath = "assets/Assets/logo.ico"
+          if ((Test-Path $exePath) -and (Test-Path $icoPath)) {
+            Write-Host "Replacing icon for MFAAvalonia.exe..."
+            & .\$rceditPath $exePath --set-icon $icoPath
+            Write-Host "Icon replaced successfully!"
+          } else {
+            Write-Host "Warning: MFAAvalonia.exe or logo.ico not found"
+            Write-Host "  EXE exists: $(Test-Path $exePath)"
+            Write-Host "  ICO exists: $(Test-Path $icoPath)"
+          }
+
+      - name: Download Python dependencies (Windows)
+        if: matrix.os == 'win' && matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          python tools/ci/download_deps.py \
+            --deps-dir ./install/python/Lib/site-packages \
+            --os ${{ matrix.os }} \
+            --arch ${{ matrix.arch }} \
+            --requirements agent/requirements.txt
+
+      - name: Prepare Windows ARM64 requirements
+        if: matrix.os == 'win' && matrix.arch == 'aarch64'
+        shell: bash
+        run: |
+          python - << 'PY'
+          from pathlib import Path
+
+          src = Path("agent/requirements.txt")
+          dst = Path("agent/requirements.win-arm64.txt")
+          lines = src.read_text(encoding="utf-8").splitlines()
+          filtered = [
+              line
+              for line in lines
+              if line.strip() and not line.strip().startswith("opencv-python")
+          ]
+          dst.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+          print(f"Wrote {dst} without opencv-python")
+          PY
+
+      - name: Download Python dependencies (Windows ARM64)
+        if: matrix.os == 'win' && matrix.arch == 'aarch64'
+        shell: bash
+        run: |
+          python tools/ci/download_deps.py \
+            --deps-dir ./install/python/Lib/site-packages \
+            --requirements agent/requirements.win-arm64.txt
+
+      - name: Download Python dependencies (macOS)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          python tools/ci/download_deps.py \
+            --deps-dir ./install/python/lib/python3.12/site-packages \
+            --os ${{ matrix.os }} \
+            --arch ${{ matrix.arch }} \
+            --requirements agent/requirements.txt
+
+      - name: Download Python dependencies (Linux x86_64)
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          python3 tools/ci/download_deps.py \
+            --deps-dir ./install/deps \
+            --requirements agent/requirements.txt
+
+      - name: Download Python dependencies (Linux aarch64)
+        if: matrix.os == 'linux' && matrix.arch == 'aarch64'
+        shell: bash
+        run: |
+          python3 tools/ci/download_deps.py \
+            --deps-dir ./install/deps \
+            --os ${{ matrix.os }} \
+            --arch ${{ matrix.arch }} \
+            --requirements agent/requirements.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Maa-Millennium-Tour-${{ matrix.os }}-${{ matrix.arch }}
+          path: "install"
+
+  changelog:
+    name: Generate changelog
+    needs: meta
+    runs-on: ubuntu-latest
+    outputs:
+      release_body: ${{ steps.git-cliff.outputs.content }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate a changelog
+        uses: orhun/git-cliff-action@v4
+        id: git-cliff
+        with:
+          config: .github/cliff.toml
+          args: -vv --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+  release:
+    if: ${{ needs.meta.outputs.is_release == 'true' }}
+    needs: [meta, install, changelog]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+
+      - name: Package artifacts
+        run: |
+          cd assets
+          for f in *; do
+            if [[ $f == *"win"* ]]; then
+              (cd "$f" && zip -r "../$f-${{ needs.meta.outputs.tag }}.zip" .)
+            else
+              if [[ -f "$f/MaaPiCli" ]]; then
+                chmod +x "$f/MaaPiCli"
+              fi
+              find "$f" -type f -name "MFAAvalonia*" -exec chmod +x {} \; 2>/dev/null || true
+              find "$f" -type f -name "python*" -exec chmod +x {} \; 2>/dev/null || true
+              tar -cpzf "$f-${{ needs.meta.outputs.tag }}.tar.gz" -C "$f" .
+            fi
+          done
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          tag_name: ${{ needs.meta.outputs.tag }}
+          body: ${{ needs.changelog.outputs.release_body }}
+          draft: false
+          prerelease: ${{ needs.meta.outputs.is_prerelease == 'true' }}
